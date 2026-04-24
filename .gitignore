@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.env
+temp.pdf
+temp_audio.webm
+.DS_Store
