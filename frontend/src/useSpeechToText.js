@@ -9,56 +9,77 @@ export default function useSpeechToText() {
   const audioChunksRef = useRef([]);
 
   const startListening = async () => {
+    setText("");
+    audioChunksRef.current = [];
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Use webm, it's standard for MediaRecorder on Chrome
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+
       let mimeType = 'audio/webm';
       if (!MediaRecorder.isTypeSupported(mimeType)) {
-        // Fallback for Safari
-        mimeType = 'audio/mp4'; 
+        if (MediaRecorder.isTypeSupported('audio/mp4')) {
+          mimeType = 'audio/mp4';
+        } else {
+          mimeType = ''; // Let browser use default
+        }
       }
-      
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
+
+      const options = mimeType ? { mimeType } : {};
+      const mediaRecorder = new MediaRecorder(stream, options);
       mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
+        if (event.data && event.data.size > 0) {
           audioChunksRef.current.push(event.data);
         }
       };
 
       mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
-        
-        // Stop all tracks to quickly release the microphone icon in browser
+        // Stop stream tracks
         stream.getTracks().forEach(track => track.stop());
+
+        const actualMime = mediaRecorder.mimeType || 'audio/webm';
+        const audioBlob = new Blob(audioChunksRef.current, { type: actualMime });
         
-        // Immediately start uploading
-        await sendToTranscribe(audioBlob, mimeType);
+        console.log(`[Audio Recorder] Recorded blob size: ${audioBlob.size} bytes, type: ${actualMime}`);
+
+        if (audioBlob.size > 0) {
+          await sendToTranscribe(audioBlob, actualMime);
+        } else {
+          console.warn("[Audio Recorder] Audio blob is 0 bytes!");
+          setIsTranscribing(false);
+        }
       };
 
-      mediaRecorder.start();
+      // Collect data every 250ms
+      mediaRecorder.start(250);
       setListening(true);
-      setText(""); // Reset hook text on new record
     } catch (error) {
-      console.error("Microphone access denied:", error);
-      alert("Microphone access denied. Please allow microphone permissions in your browser.");
+      console.error("Microphone access denied or error:", error);
+      alert("Microphone access error. Please ensure microphone permissions are allowed in your browser.");
+      setListening(false);
+      setIsTranscribing(false);
     }
   };
 
   const stopListening = () => {
-    if (mediaRecorderRef.current && listening) {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
       setListening(false);
-      setIsTranscribing(true); // Switch to waiting state
+      setIsTranscribing(true);
     }
   };
 
   const sendToTranscribe = async (audioBlob, mimeType) => {
     const formData = new FormData();
-    const extension = mimeType.split('/')[1].split(';')[0];
-    formData.append("file", audioBlob, `recording.${extension}`);
+    const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+    formData.append("file", audioBlob, `recording.${ext}`);
 
     try {
       const res = await fetch("http://127.0.0.1:8000/transcribe", {
@@ -66,11 +87,25 @@ export default function useSpeechToText() {
         body: formData,
       });
 
+      if (!res.ok) {
+        throw new Error(`Server returned status ${res.status}`);
+      }
+
       const data = await res.json();
-      setText(data.transcript);
+      const transcribed = data.transcript ? data.transcript.trim() : "";
+      
+      console.log("[Audio Recorder] Server returned transcript:", transcribed);
+      
+      const lower = transcribed.toLowerCase();
+      // Only filter if transcript is strictly just a silence dot or empty
+      if (lower === "." || lower === "thank you." || lower === "thank you") {
+        setText("");
+      } else {
+        setText(transcribed);
+      }
     } catch (e) {
-      console.error("Transcription failed:", e);
-      alert("Failed to transcribe audio. Is the backend running?");
+      console.error("Transcription API failed:", e);
+      alert("Failed to transcribe audio. Is the backend server running at http://127.0.0.1:8000?");
     } finally {
       setIsTranscribing(false);
     }

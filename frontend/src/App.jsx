@@ -60,24 +60,12 @@ function App() {
     }
   };
 
-  // 🔥 Speech auto triggers
+  // 🔊 Speak question aloud when page loads
   useEffect(() => {
-    // When a question appears for the very first time in INTERVIEW mode
+    // When a question appears in INTERVIEW mode
     if (appMode === "INTERVIEW" && currentQuestion && !hasAutomaticallyListened) {
       speak(`Question ${questionIndex}. ${currentQuestion}`);
       setHasAutomaticallyListened(true);
-
-      // Auto start listening after exactly the time it takes to speak (approx) 
-      const words = currentQuestion.split(" ").length;
-      const delay = 1500 + (words * 300); // Rough estimate
-      
-      const timer = setTimeout(() => {
-        if (!listening) {
-          startListening();
-        }
-      }, delay);
-      
-      return () => clearTimeout(timer);
     }
   }, [appMode, currentQuestion, questionIndex, hasAutomaticallyListened]);
 
@@ -85,10 +73,9 @@ function App() {
   useEffect(() => {
     if (text) {
       setCurrentAnswer(prev => {
-        // Prevent duplicate appending by adding slightly clean space
-        const formatted = text.trim();
-        if (prev.endsWith(formatted)) return prev;
-        return prev + (prev.length > 0 ? " " : "") + formatted;
+        if (!prev.trim()) return text;
+        if (prev.includes(text)) return prev;
+        return prev + " " + text;
       });
     }
   }, [text]);
@@ -216,7 +203,13 @@ function App() {
 
           <div className="control-row">
             {!listening && !isTranscribing ? (
-              <button className="btn btn-secondary" onClick={startListening}>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => {
+                  window.speechSynthesis.cancel();
+                  startListening();
+                }}
+              >
                 🎙️ Start Speaking
               </button>
             ) : listening ? (

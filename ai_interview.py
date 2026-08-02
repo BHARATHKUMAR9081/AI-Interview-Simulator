@@ -5,6 +5,10 @@ import PyPDF2
 import pyttsx3
 import speech_recognition as sr
 from groq import Groq
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ==============================
 # 🔑 CONFIG
@@ -33,15 +37,18 @@ def speak(text):
     if not text.strip():
         return
     
-    print(f"🤖 AI: {text}")
+    print(f"🤖 AI: {text}", flush=True)
     
-    engine = pyttsx3.init()
-    engine.setProperty('rate', 170)
-    engine.setProperty('volume', 1.0)
-    
-    engine.say(text)
-    engine.runAndWait()
-    engine.stop()
+    try:
+        engine = pyttsx3.init()
+        engine.setProperty('rate', 170)
+        engine.setProperty('volume', 1.0)
+        
+        engine.say(text)
+        engine.runAndWait()
+        engine.stop()
+    except Exception as e:
+        print(f"[TTS Error] pyttsx3 failed: {e}", flush=True)
 
 # ==============================
 # 📄 PDF READER
@@ -74,7 +81,7 @@ def _groq_generate(prompt) -> str:
             if "429" in msg or "Rate limit" in msg:
                 wait_time = 3 * (2 ** attempt)
                 if attempt < 3:
-                    print(f"\n⏳ API Busy. Retrying in {wait_time}s... (Attempt {attempt + 1}/4)")
+                    print(f"\n⏳ API Busy. Retrying in {wait_time}s... (Attempt {attempt + 1}/4)", flush=True)
                     try:
                         speak(f"API busy. Retrying in {wait_time} seconds.")
                     except:
@@ -89,7 +96,7 @@ def _groq_generate(prompt) -> str:
 # 🧠 QUESTION GENERATION
 # ==============================
 def generate_first_question(resume_text: str):
-    print(f"\n🧠 Generating first question...")
+    print(f"\n🧠 Generating first question...", flush=True)
     
     prompt = f"""
 Based on the following resume, ask the single most important introductory technical interview question to assess the candidate's core competency.
@@ -188,7 +195,7 @@ def save_to_s3(session_data: dict):
             Body=json.dumps(session_data, indent=2),
             ContentType='application/json'
         )
-        print(f"✅ Successfully exported results to S3: s3://{bucket_name}/{key}")
+        print(f"✅ Successfully exported results to S3: s3://{bucket_name}/{key}", flush=True)
         return True
     except ClientError as e:
         error_code = e.response['Error']['Code']
@@ -201,14 +208,14 @@ def save_to_s3(session_data: dict):
                     Body=json.dumps(session_data, indent=2),
                     ContentType='application/json'
                 )
-                print(f"✅ Created bucket and exported results to S3")
+                print(f"✅ Created bucket and exported results to S3", flush=True)
                 return True
             except Exception as e2:
-                 print(f"❌ Could not create bucket: {e2}")
+                 print(f"❌ Could not create bucket: {e2}", flush=True)
         else:
-            print(f"❌ S3 Upload Failed: {e}")
+            print(f"❌ S3 Upload Failed: {e}", flush=True)
     except Exception as e:
-        print(f"❌ General S3 Error: {e}")
+        print(f"❌ General S3 Error: {e}", flush=True)
         
     return False
 
@@ -217,26 +224,43 @@ def save_to_s3(session_data: dict):
 # 🎙️ AUDIO TRANSCRIPTION
 # ==============================
 def transcribe_audio(file_path: str):
-    print(f"\n[STT] Transcribing audio using Groq Whisper...")
+    print(f"\n[STT] Transcribing audio file: {file_path}", flush=True)
     try:
+        file_size = os.path.getsize(file_path)
+        print(f"[STT] Audio file size: {file_size} bytes", flush=True)
+        if file_size < 50:
+            print("[STT] File size is 0 or empty, skipping.", flush=True)
+            return ""
+
+        filename = os.path.basename(file_path)
         with open(file_path, "rb") as file:
             transcription = client.audio.transcriptions.create(
-              file=(file_path, file.read()),
+              file=(filename, file.read()),
               model=GROQ_AUDIO_MODEL,
+              language="en"
             )
         
-        print(f"[STT] Transcribed: {transcription.text}")
-        return transcription.text
+        text = transcription.text.strip()
+        print(f"[STT] Transcribed: '{text}'", flush=True)
+
+        # Filter out common Whisper silence hallucinations
+        hallucinations = ["thank you.", "thank you", "thank you for watching.", "thanks.", "thanks for watching.", ".", "..", "...", "you"]
+        if text.lower() in hallucinations:
+            print(f"[STT] Filtered out silent hallucination: '{text}'", flush=True)
+            return ""
+
+        return text
     except Exception as e:
-        print(f"[Error] Transcription Failed: {e}")
+        print(f"[Error] Transcription Failed: {e}", flush=True)
         return ""
+
 
 # ==============================
 # 🎤 SPEECH INPUT
 # ==============================
 def listen():
     with sr.Microphone() as source:
-        print("🎤 Speak...")
+        print("🎤 Speak...", flush=True)
         recognizer.adjust_for_ambient_noise(source, duration=1)  # adapt to background noise
         recognizer.pause_threshold = 2.0       # wait 2 seconds of silence before stopping
         recognizer.energy_threshold = 300      # sensitivity to sound
@@ -245,7 +269,7 @@ def listen():
 
     try:
         text = recognizer.recognize_google(audio, language="en-IN")
-        print(f"🧑 {text}")
+        print(f"🧑 {text}", flush=True)
         return text
     except:
         speak("Sorry, I could not hear you clearly. Please try again.")
@@ -263,7 +287,7 @@ def run_interview(resume_text):
     interview_log = []
 
     for i in range(1, NUM_QUESTIONS + 1):
-        print(f"\nQ{i}: {q}")
+        print(f"\nQ{i}: {q}", flush=True)
         speak(f"Question {i}. {q}")
 
         ans = ""
@@ -290,7 +314,7 @@ def run_interview(resume_text):
             q = next_question
 
     total = sum(scores)
-    print(f"\nFinal Score: {total}/{len(scores)*10}")
+    print(f"\nFinal Score: {total}/{len(scores)*10}", flush=True)
     speak(f"Interview complete. Your total score is {total} out of {len(scores) * 10}. Thank you for attending.")
     
     # Save to S3
@@ -305,10 +329,11 @@ def run_interview(resume_text):
 # 🚀 ENTRY
 # ==============================
 if __name__ == "__main__":
+    print("AI Interview Simulator CLI", flush=True)
     resume_path = input("Enter resume path: ").strip()
 
     if not os.path.isfile(resume_path):
-        print("❌ File not found")
+        print("❌ File not found", flush=True)
         speak("File not found. Please check the path and try again.")
         sys.exit()
 
