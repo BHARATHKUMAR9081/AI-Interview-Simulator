@@ -8,7 +8,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,10 +26,15 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin 759204735992.dkr.ecr.ap-south-1.amazonaws.com
+          # ECR registry extraction (without repository name)
+          ECR_REPO="759204735992.dkr.ecr.ap-south-1.amazonaws.com/ai-interview-simulator"
+          ECR_REGISTRY=$(echo $ECR_REPO | cut -d'/' -f1)
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
 
       - name: Build and push Docker image
         env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           IMAGE_REPO="759204735992.dkr.ecr.ap-south-1.amazonaws.com/ai-interview-simulator"
@@ -44,13 +48,13 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          REGION="${AWS_REGION}"
+          REGION="${{ secrets.AWS_REGION }}"
           INSTANCE_ID="i-0735acdbaa33ddc3f"
           ECR_REGISTRY="759204735992.dkr.ecr.ap-south-1.amazonaws.com"
           ECR_REPOSITORY="ai-interview-simulator"
           IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
 
-          cat > /tmp/ssm-params.json << 'SSMPARAMS'
+          cat > /tmp/ssm-params.json <<'SSMPARAMS'
           {
             "commands": [
               "aws ecr get-login-password --region $${REGION} | docker login --username AWS --password-stdin $${ECR_REGISTRY}",
@@ -72,11 +76,10 @@ jobs:
           echo "SSM command submitted with ID: $COMMAND_ID"
 
       - name: Verify public endpoint
-        env:
-          PUBLIC_IP: "3.7.110.41"
         run: |
-          echo "Checking health endpoint at http://$PUBLIC_IP"
-          if ! curl -fsSL http://$PUBLIC_IP/ >/dev/null; then
+          PUBLIC_URL="http://3.7.110.41"
+          echo "Checking health endpoint at $PUBLIC_URL"
+          if ! curl -fsSL $PUBLIC_URL >/dev/null; then
             echo "Health check failed: unable to reach service" >&2
             exit 1
           else
