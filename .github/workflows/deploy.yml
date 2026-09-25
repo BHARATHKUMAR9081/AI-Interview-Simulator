@@ -2,7 +2,8 @@ name: Build, Push and Deploy to EC2 Docker
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -22,18 +23,30 @@ jobs:
           sudo apt-get install -y awscli
 
       - name: Login to Amazon ECR
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           ECR_REGISTRY="759204735992.dkr.ecr.ap-south-1.amazonaws.com"
-          aws ecr get-login-password --region "${{ secrets.AWS_REGION }}" | docker login --username AWS --password-stdin $ECR_REGISTRY
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
       - name: Build and push Docker image
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           IMAGE_REPO="759204735992.dkr.ecr.ap-south-1.amazonaws.com/ai-interview-simulator"
-          docker build -t $IMAGE_REPO:$GITHUB_SHA -t $IMAGE_REPO:latest .
-          docker push $IMAGE_REPO:$GITHUB_SHA
-          docker push $IMAGE_REPO:latest
+          docker build -t "$IMAGE_REPO:$GITHUB_SHA" -t "$IMAGE_REPO:latest" .
+          docker push "$IMAGE_REPO:$GITHUB_SHA"
+          docker push "$IMAGE_REPO:latest"
 
       - name: Deploy to EC2 via SSM
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           REGION="${{ secrets.AWS_REGION }}"
           INSTANCE_ID="i-0735acdbaa33ddc3f"
@@ -66,9 +79,14 @@ jobs:
         run: |
           PUBLIC_URL="http://3.7.110.41"
           echo "Checking health endpoint at $PUBLIC_URL"
-          if ! curl -fsSL $PUBLIC_URL >/dev/null; then
-            echo "Health check failed: unable to reach service" >&2
-            exit 1
-          else
-            echo "Health check succeeded: service is reachable"
-          fi
+          for i in {1..10}; do
+            if curl -fsSL -o /dev/null "$PUBLIC_URL"; then
+              echo "Health check succeeded"
+              exit 0
+            else
+              echo "Attempt $i failed"
+              sleep 5
+            fi
+          done
+          echo "Health check failed: unable to reach service" >&2
+          exit 1
