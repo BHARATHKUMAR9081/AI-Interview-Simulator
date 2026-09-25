@@ -1,4 +1,5 @@
-name: Build and Deploy
+# .github/workflows/production.yml
+name: Build and Deploy to EC2
 
 on:
   push:
@@ -9,14 +10,16 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    # Simple environment variables from the contract (cannot use `${ env.* }` here)
     env:
-      PUBLIC_URL: http://3.7.110.41
       REGION: ap-south-1
       ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
       ECR_REPOSITORY: ai-interview-simulator
       INSTANCE_ID: i-0735acdbaa33ddc3f
+      PUBLIC_URL: http://3.7.110.41
+
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
@@ -27,7 +30,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y awscli
 
-      - name: Login to Amazon ECR
+      - name: Configure Docker for ECR
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -41,10 +44,13 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          IMAGE_REPO="$ECR_REGISTRY/$ECR_REPOSITORY"
-          docker build -t "$IMAGE_REPO:$GITHUB_SHA" -t "$IMAGE_REPO:latest" .
-          docker push "$IMAGE_REPO:$GITHUB_SHA"
-          docker push "$IMAGE_REPO:latest"
+          IMAGE_REPO="${ECR_REGISTRY}/${ECR_REPOSITORY}"
+          echo "Building image ${IMAGE_REPO}:${{ github.sha }} and ${IMAGE_REPO}:latest"
+          docker build -t "${IMAGE_REPO}:${{ github.sha }}" -t "${IMAGE_REPO}:latest" .
+          echo "Pushing image ${IMAGE_REPO}:${{ github.sha }}"
+          docker push "${IMAGE_REPO}:${{ github.sha }}"
+          echo "Pushing image ${IMAGE_REPO}:latest"
+          docker push "${IMAGE_REPO}:latest"
 
       - name: Deploy to EC2 via SSM
         env:
@@ -52,7 +58,8 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+
           cat > /tmp/ssm-params.json <<'SSMPARAMS'
           {
             "commands": [
@@ -64,22 +71,32 @@ jobs:
             ]
           }
           SSMPARAMS
-          aws ssm send-command \
+
+          echo "Sending SSM command to instance ${INSTANCE_ID}"
+          COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --region "$REGION" \
             --document-name "AWS-RunShellScript" \
             --parameters file:///tmp/ssm-params.json \
-            --query "Command.CommandId" --output text
+            --query "Command.CommandId" --output text)
+
+          echo "SSM command id: $COMMAND_ID"
+          echo "Waiting for command to complete..."
+          # Wait until command completes or times out after 5 minutes
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --region "$REGION"
 
       - name: Verify health endpoint
         run: |
           echo "Checking health at $PUBLIC_URL"
-          for i in {1..10}; do
+          for i in $(seq 1 10); do
             if curl -fSL "$PUBLIC_URL" >/dev/null 2>&1; then
-              echo "Health check succeeded"
+              echo "Health check succeeded on attempt $i"
               exit 0
             else
-              echo "Attempt $i failed"
+              echo "Attempt $i failed – retrying in 5 seconds"
               sleep 5
             fi
           done
