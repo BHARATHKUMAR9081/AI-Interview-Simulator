@@ -2,28 +2,23 @@ name: Build, Deploy and Verify
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
-# NOTE: Only the actions listed in the rules are used below.
 jobs:
   deploy:
-    name: Docker Build, ECR Push & EC2 Deploy
     runs-on: ubuntu-latest
-    # These are the only secrets that exist for this repository.
-    # Do **not** reference any other secrets.
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
       AWS_REGION: ${{ secrets.AWS_REGION }}
-      # Contract values
       INSTANCE_ID: i-0a02453e4e5619a0c
       PUBLIC_URL: http://3.7.91.80
       TARGET_PORT: 80
       ECR_REPOSITORY_URI: 759204735992.dkr.ecr.ap-south-1.amazonaws.com/ai-interview-simulator
       DOCKERFILE_PATH: .
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,21 +30,16 @@ jobs:
         id: build-and-push
         run: |
           set -e
-          # Resolve registry and repository name from the full URI
           ECR_REGISTRY=$(echo "$ECR_REPOSITORY_URI" | cut -d'/' -f1)
           ECR_REPOSITORY=$(echo "$ECR_REPOSITORY_URI" | cut -d'/' -f2)
-          IMAGE_TAG=${GITHUB_SHA::7}   # short commit SHA
+          IMAGE_TAG=${GITHUB_SHA::7}
           FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY"
-
-          # Persist values for later steps
           echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$ECR_REPOSITORY" >> $GITHUB_ENV
           echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
-
           echo "=== Logging in to Amazon ECR ==="
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-
           echo "=== Building image $FULL_IMAGE:$IMAGE_TAG ==="
           docker build \
             --pull \
@@ -57,18 +47,14 @@ jobs:
             -t "$FULL_IMAGE:$IMAGE_TAG" \
             -t "$FULL_IMAGE:latest" \
             -f "$DOCKERFILE_PATH/Dockerfile" .
-
           echo "=== Pushing images ==="
           docker push "$FULL_IMAGE:$IMAGE_TAG"
           docker push "$FULL_IMAGE:latest"
 
-      - name: Deploy to EC2 (via SSM)
+      - name: Deploy to EC2 via SSM
         id: deploy-ec2
         run: |
           set -e
-          #--------------------------------------------------------------------
-          # Build the JSON payload for the SSM command
-          #--------------------------------------------------------------------
           cat > /tmp/ssm-params.json <<'SSMPARAMS'
           {
             "commands": [
@@ -80,8 +66,6 @@ jobs:
             ]
           }
           SSMPARAMS
-
-          # Send the command to the target instance
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --region "$AWS_REGION" \
@@ -89,25 +73,40 @@ jobs:
             --parameters file:///tmp/ssm-params.json \
             --query "Command.CommandId" \
             --output text)
-
           echo "SSM command sent (ID=$COMMAND_ID). Waiting for completion..."
+          while true; do
+            STATUS=$(aws ssm list-command-invocations \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --region "$AWS_REGION" \
+              --query "CommandInvocations[0].Status" --output text)
+            if [ "$STATUS" = "Success" ]; then
+              echo "SSM Command succeeded."
+              break
+            elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" || "$STATUS" == "TimedOut" ]]; then
+              echo "SSM Command $STATUS."
+              exit 1
+            else
+              echo "SSM Command Status: $STATUS. Waiting..."
+              sleep 10
+            fi
+          done
 
-          # Wait until the command finishes
-          aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --region "$AWS_REGION"
+      - name: Wait for container to be ready
+        run: sleep 30
 
-          echo "SSM command completed."
-
-      - name: Verify deployment is healthy
+      - name: Verify application health
         run: |
           set -e
-          echo "=== Running health check against $PUBLIC_URL ==="
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL")
-          if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "Health check failed: received $HTTP_STATUS"
-            exit 1
-          else
-            echo "Health check succeeded: received $HTTP_STATUS"
-          fi
+          for i in {1..5}; do
+            echo "Health check attempt $i: $PUBLIC_URL"
+            if curl -f $PUBLIC_URL; then
+              echo "Health check succeeded."
+              exit 0
+            else
+              echo "Health check failed. Retrying in 10s..."
+              sleep 10
+            fi
+          done
+          echo "Health check failed after 5 attempts."
+          exit 1
