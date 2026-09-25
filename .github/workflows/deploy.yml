@@ -2,8 +2,7 @@ name: Build, Deploy and Verify
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -19,12 +18,19 @@ jobs:
       TARGET_PORT: 80
       ECR_REPOSITORY_URI: 759204735992.dkr.ecr.ap-south-1.amazonaws.com/ai-interview-simulator
       DOCKERFILE_PATH: .
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS CLI
+        run: |
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+          aws configure set default.region $AWS_REGION
 
       - name: Build and push Docker image to ECR
         id: build-and-push
@@ -55,17 +61,17 @@ jobs:
         id: deploy-ec2
         run: |
           set -e
-          cat > /tmp/ssm-params.json <<'SSMPARAMS'
+          cat > /tmp/ssm-params.json << EOF
           {
             "commands": [
-              "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
-              "docker pull $FULL_IMAGE:latest",
+              "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}",
+              "docker pull ${FULL_IMAGE}:latest",
               "docker stop app || true",
               "docker rm app || true",
-              "docker run -d --restart always -p 80:80 --name app $FULL_IMAGE:latest"
+              "docker run -d --restart always -p 80:80 --name app ${FULL_IMAGE}:latest"
             ]
           }
-          SSMPARAMS
+          EOF
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --region "$AWS_REGION" \
@@ -92,21 +98,19 @@ jobs:
             fi
           done
 
-      - name: Wait for container to be ready
-        run: sleep 30
-
-      - name: Verify application health
+      - name: Verify deployment health
         run: |
           set -e
-          for i in {1..5}; do
-            echo "Health check attempt $i: $PUBLIC_URL"
-            if curl -f $PUBLIC_URL; then
-              echo "Health check succeeded."
+          echo "Waiting for service to be ready..."
+          for i in {1..30}; do
+            status=$(curl --silent --write-out '%{http_code}' --output /dev/null $PUBLIC_URL) || status=000
+            if [ "$status" = "200" ]; then
+              echo "Health check passed with status $status."
               exit 0
             else
-              echo "Health check failed. Retrying in 10s..."
+              echo "Attempt $i: status $status, retrying in 10s..."
               sleep 10
             fi
           done
-          echo "Health check failed after 5 attempts."
+          echo "Health check failed after multiple attempts."
           exit 1
