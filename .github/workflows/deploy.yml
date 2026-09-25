@@ -8,6 +8,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -21,21 +22,11 @@ jobs:
           sudo apt-get install -y awscli
 
       - name: Login to Amazon ECR
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          # ECR registry extraction (without repository name)
-          ECR_REPO="759204735992.dkr.ecr.ap-south-1.amazonaws.com/ai-interview-simulator"
-          ECR_REGISTRY=$(echo $ECR_REPO | cut -d'/' -f1)
-          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+          ECR_REGISTRY="759204735992.dkr.ecr.ap-south-1.amazonaws.com"
+          aws ecr get-login-password --region "${{ secrets.AWS_REGION }}" | docker login --username AWS --password-stdin $ECR_REGISTRY
 
       - name: Build and push Docker image
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           IMAGE_REPO="759204735992.dkr.ecr.ap-south-1.amazonaws.com/ai-interview-simulator"
           docker build -t $IMAGE_REPO:$GITHUB_SHA -t $IMAGE_REPO:latest .
@@ -43,10 +34,6 @@ jobs:
           docker push $IMAGE_REPO:latest
 
       - name: Deploy to EC2 via SSM
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           REGION="${{ secrets.AWS_REGION }}"
           INSTANCE_ID="i-0735acdbaa33ddc3f"
