@@ -1,4 +1,4 @@
-name: Build and Deploy to EC2
+name: Deploy to EC2 Docker
 
 on:
   push:
@@ -9,12 +9,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      REGION: ap-south-1
-      ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
-      ECR_REPOSITORY: ai-interview-simulator
-      INSTANCE_ID: i-0735acdbaa33ddc3f
-      PUBLIC_URL: http://3.7.110.41
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -27,11 +22,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y awscli
 
-      - name: Configure Docker for ECR
+      - name: Login to ECR
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
         run: |
           aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
@@ -40,12 +36,14 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
+          ECR_REPOSITORY: ai-interview-simulator
         run: |
           IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY"
-          echo "Building image ${IMAGE_URI}:${{ github.sha }} and ${IMAGE_URI}:latest"
-          docker build -t "${IMAGE_URI}:${{ github.sha }}" -t "${IMAGE_URI}:latest" .
-          echo "Pushing image ${IMAGE_URI}:${{ github.sha }}"
-          docker push "${IMAGE_URI}:${{ github.sha }}"
+          echo "Building image ${IMAGE_URI}:${GITHUB_SHA} and ${IMAGE_URI}:latest"
+          docker build -t "${IMAGE_URI}:${GITHUB_SHA}" -t "${IMAGE_URI}:latest" .
+          echo "Pushing image ${IMAGE_URI}:${GITHUB_SHA}"
+          docker push "${IMAGE_URI}:${GITHUB_SHA}"
           echo "Pushing image ${IMAGE_URI}:latest"
           docker push "${IMAGE_URI}:latest"
 
@@ -54,16 +52,20 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
+          REGION: ap-south-1
+          ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
+          ECR_REPOSITORY: ai-interview-simulator
+          INSTANCE_ID: i-0735acdbaa33ddc3f
         run: |
           IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
           cat > /tmp/ssm-params.json <<'SSMPARAMS'
           {
             "commands": [
-              "aws ecr get-login-password --region $${REGION} | docker login --username AWS --password-stdin $${ECR_REGISTRY}",
-              "docker pull $${IMAGE_URI}",
+              "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
+              "docker pull $IMAGE_URI",
               "docker stop app || true",
               "docker rm app || true",
-              "docker run -d --restart always -p 80:80 --name app $${IMAGE_URI}"
+              "docker run -d --restart always -p 80:80 --name app $IMAGE_URI"
             ]
           }
           SSMPARAMS
@@ -82,10 +84,12 @@ jobs:
             --region "$REGION"
 
       - name: Verify health endpoint
+        env:
+          PUBLIC_URL: http://3.7.110.41
         run: |
           echo "Checking health at $PUBLIC_URL"
           for i in $(seq 1 10); do
-            if curl -fSL "$PUBLIC_URL" >/dev/null 2>&1; then
+            if curl -f -s -o /dev/null "$PUBLIC_URL"; then
               echo "Health check succeeded on attempt $i"
               exit 0
             else
@@ -93,8 +97,5 @@ jobs:
               sleep 10
             fi
           done
-          echo "Health check failed after 10 attempts" && exit 1
-
-      - name: Deployment status
-        if: success()
-        run: echo "✅ Deployment completed successfully."
+          echo "Health check failed after 10 attempts"
+          exit 1
