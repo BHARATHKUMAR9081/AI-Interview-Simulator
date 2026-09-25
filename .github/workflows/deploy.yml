@@ -1,4 +1,4 @@
-name: Deploy to EC2 Docker
+name: Build and Deploy
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
       ECR_REPOSITORY: ai-interview-simulator
       INSTANCE_ID: i-0735acdbaa33ddc3f
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
@@ -46,9 +46,6 @@ jobs:
           docker push "$IMAGE_REPO:$GITHUB_SHA"
           docker push "$IMAGE_REPO:latest"
 
-      - name: Show built images
-        run: docker images
-
       - name: Deploy to EC2 via SSM
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -74,11 +71,11 @@ jobs:
             --parameters file:///tmp/ssm-params.json \
             --query "Command.CommandId" --output text
 
-      - name: Verify public endpoint
+      - name: Verify health endpoint
         run: |
-          echo "Checking health endpoint at $PUBLIC_URL"
+          echo "Checking health at $PUBLIC_URL"
           for i in {1..10}; do
-            if curl -fsSL "$PUBLIC_URL" ; then
+            if curl -fSL "$PUBLIC_URL" >/dev/null 2>&1; then
               echo "Health check succeeded"
               exit 0
             else
