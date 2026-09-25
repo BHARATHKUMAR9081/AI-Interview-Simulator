@@ -8,7 +8,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -26,22 +25,19 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Configure AWS CLI
-        run: |
-          aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
-          aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
-          aws configure set default.region "$AWS_REGION"
-
       - name: Build and push Docker image to Amazon ECR
-        id: build_and_push
         run: |
           set -e
+          # Derive registry and repository
           ECR_REGISTRY=$(echo "$ECR_REPOSITORY_URI" | cut -d'/' -f1)
           ECR_REPOSITORY=$(echo "$ECR_REPOSITORY_URI" | cut -d'/' -f2)
+
+          # Tag for the image
           IMAGE_TAG=${GITHUB_SHA::7}
           FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY"
           IMAGE_URI="$FULL_IMAGE:latest"
 
+          # Export for later steps
           echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$ECR_REPOSITORY" >> $GITHUB_ENV
           echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
@@ -49,7 +45,8 @@ jobs:
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
           echo "=== Logging in to Amazon ECR ==="
-          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          aws ecr get-login-password --region "$AWS_REGION" | \
+            docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
           echo "=== Building image $FULL_IMAGE:$IMAGE_TAG ==="
           docker build \
@@ -96,28 +93,27 @@ jobs:
             if [ "$STATUS" = "Success" ]; then
               echo "SSM Command succeeded."
               break
-            elif [[ "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
-              echo "SSM Command failed with status: $STATUS"
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
+              echo "SSM Command failed with status $STATUS."
               exit 1
             else
-              echo "Waiting for SSM execution to finish... (status: $STATUS)"
+              echo "Waiting for SSM command to finish... (status: $STATUS)"
               sleep 5
             fi
           done
 
-      - name: Perform Health Check
+      - name: Verify deployment health
         run: |
-          MAX_RETRIES=10
-          echo "Checking health endpoint at $PUBLIC_URL ..."
-          for i in $(seq 1 $MAX_RETRIES); do
-            STATUS=$(curl -fsS -o /dev/null -w "%{http_code}" "$PUBLIC_URL")
-            if [[ "$STATUS" -eq 200 ]]; then
-              echo "Health check succeeded with status $STATUS."
+          set -e
+          echo "Waiting for service to become available..."
+          for attempt in $(seq 1 30); do
+            if curl -fsSL $PUBLIC_URL > /dev/null; then
+              echo "Service responded with HTTP 200."
               exit 0
             else
-              echo "Attempt $i: Status $STATUS, retrying in 5s..."
+              echo "Attempt $attempt: Service not ready, retrying in 5s..."
               sleep 5
             fi
           done
-          echo "Health check failed after $MAX_RETRIES attempts."
+          echo "Service did not respond with HTTP 200 after 30 attempts." >&2
           exit 1
