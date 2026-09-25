@@ -9,6 +9,12 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
+      ECR_REPOSITORY: ai-interview-simulator
+      REGION: ap-south-1
+      INSTANCE_ID: i-0735acdbaa33ddc3f
+      PUBLIC_URL: http://3.7.110.41
 
     steps:
       - name: Checkout source
@@ -22,60 +28,45 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y awscli
 
-      - name: Login to ECR
+      - name: Log in to Amazon ECR
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
         run: |
-          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+          aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
       - name: Build and push Docker image
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
-          ECR_REPOSITORY: ai-interview-simulator
         run: |
-          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY"
-          echo "Building image ${IMAGE_URI}:${GITHUB_SHA} and ${IMAGE_URI}:latest"
-          docker build -t "${IMAGE_URI}:${GITHUB_SHA}" -t "${IMAGE_URI}:latest" .
-          echo "Pushing image ${IMAGE_URI}:${GITHUB_SHA}"
-          docker push "${IMAGE_URI}:${GITHUB_SHA}"
-          echo "Pushing image ${IMAGE_URI}:latest"
-          docker push "${IMAGE_URI}:latest"
+          docker build -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest" -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:${GITHUB_SHA}" .
+          docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+          docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${GITHUB_SHA}"
 
       - name: Deploy to EC2 via SSM
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          REGION: ap-south-1
-          ECR_REGISTRY: 759204735992.dkr.ecr.ap-south-1.amazonaws.com
-          ECR_REPOSITORY: ai-interview-simulator
-          INSTANCE_ID: i-0735acdbaa33ddc3f
         run: |
-          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:latest"
-          cat > /tmp/ssm-params.json <<'SSMPARAMS'
+          cat > /tmp/ssm-params.json <<SSMPARAMS
           {
             "commands": [
-              "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
-              "docker pull $IMAGE_URI",
+              "aws ecr get-login-password --region ${REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}",
+              "docker pull ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest",
               "docker stop app || true",
               "docker rm app || true",
-              "docker run -d --restart always -p 80:80 --name app $IMAGE_URI"
+              "docker run -d --restart always -p 80:80 --name app ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
             ]
           }
           SSMPARAMS
-          echo "Sending SSM command to instance ${INSTANCE_ID}"
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --region "$REGION" \
             --document-name "AWS-RunShellScript" \
             --parameters file:///tmp/ssm-params.json \
-            --query "Command.CommandId" --output text)
+            --query "Command.CommandId" \
+            --output text)
           echo "SSM command id: $COMMAND_ID"
           echo "Waiting for command to complete..."
           aws ssm wait command-executed \
@@ -84,8 +75,6 @@ jobs:
             --region "$REGION"
 
       - name: Verify health endpoint
-        env:
-          PUBLIC_URL: http://3.7.110.41
         run: |
           echo "Checking health at $PUBLIC_URL"
           for i in $(seq 1 10); do
@@ -93,8 +82,8 @@ jobs:
               echo "Health check succeeded on attempt $i"
               exit 0
             else
-              echo "Attempt $i failed; retrying in 10s..."
-              sleep 10
+              echo "Attempt $i failed, retrying in 5 seconds..."
+              sleep 5
             fi
           done
           echo "Health check failed after 10 attempts"
