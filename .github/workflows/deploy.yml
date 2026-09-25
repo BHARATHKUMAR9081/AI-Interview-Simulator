@@ -9,12 +9,12 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
+      REGION: ${{ secrets.AWS_REGION }}
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      ECR_REPOSITORY_URI: 759204735992.dkr.ecr.ap-south-1.amazonaws.com/ai-interview-simulator
-      INSTANCE_ID: i-0a02453e4e5619a0c
-      PUBLIC_URL: http://3.7.91.80
+      ECR_REPOSITORY_URI: ${{ secrets.ECR_REPOSITORY_URI }}
+      INSTANCE_ID: ${{ secrets.INSTANCE_ID }}
+      PUBLIC_URL: ${{ secrets.PUBLIC_URL }}
       TARGET_PORT: 80
       DOCKERFILE_PATH: .
 
@@ -25,28 +25,30 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push Docker image to Amazon ECR
+      - name: Install AWS CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y awscli
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $(echo $ECR_REPOSITORY_URI | cut -d'/' -f1)
+
+      - name: Build and Push Docker image
+        id: build
         run: |
           set -e
-          # Derive registry and repository
           ECR_REGISTRY=$(echo "$ECR_REPOSITORY_URI" | cut -d'/' -f1)
           ECR_REPOSITORY=$(echo "$ECR_REPOSITORY_URI" | cut -d'/' -f2)
-
-          # Tag for the image
           IMAGE_TAG=${GITHUB_SHA::7}
           FULL_IMAGE="$ECR_REGISTRY/$ECR_REPOSITORY"
           IMAGE_URI="$FULL_IMAGE:latest"
 
-          # Export for later steps
           echo "ECR_REGISTRY=$ECR_REGISTRY" >> $GITHUB_ENV
           echo "ECR_REPOSITORY=$ECR_REPOSITORY" >> $GITHUB_ENV
           echo "FULL_IMAGE=$FULL_IMAGE" >> $GITHUB_ENV
           echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
-
-          echo "=== Logging in to Amazon ECR ==="
-          aws ecr get-login-password --region "$AWS_REGION" | \
-            docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
           echo "=== Building image $FULL_IMAGE:$IMAGE_TAG ==="
           docker build \
@@ -66,7 +68,7 @@ jobs:
           cat > /tmp/ssm-params.json << 'SSMPARAMS'
           {
             "commands": [
-              "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
+              "aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
               "docker pull $IMAGE_URI",
               "docker stop app || true",
               "docker rm app || true",
@@ -77,7 +79,7 @@ jobs:
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
-            --region "$AWS_REGION" \
+            --region "$REGION" \
             --document-name "AWS-RunShellScript" \
             --parameters file:///tmp/ssm-params.json \
             --query "Command.CommandId" \
@@ -88,7 +90,7 @@ jobs:
             STATUS=$(aws ssm list-command-invocations \
               --command-id "$COMMAND_ID" \
               --instance-id "$INSTANCE_ID" \
-              --region "$AWS_REGION" \
+              --region "$REGION" \
               --query "CommandInvocations[0].Status" --output text)
             if [ "$STATUS" = "Success" ]; then
               echo "SSM Command succeeded."
@@ -97,23 +99,23 @@ jobs:
               echo "SSM Command failed with status $STATUS."
               exit 1
             else
-              echo "Waiting for SSM command to finish... (status: $STATUS)"
               sleep 5
             fi
           done
 
-      - name: Verify deployment health
+      - name: Health check
         run: |
           set -e
-          echo "Waiting for service to become available..."
-          for attempt in $(seq 1 30); do
-            if curl -fsSL $PUBLIC_URL > /dev/null; then
-              echo "Service responded with HTTP 200."
+          echo "Checking health at $PUBLIC_URL"
+          for i in {1..10}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PUBLIC_URL")
+            if [ "$STATUS" -eq 200 ]; then
+              echo "Health check succeeded with status 200."
               exit 0
             else
-              echo "Attempt $attempt: Service not ready, retrying in 5s..."
-              sleep 5
+              echo "Attempt $i: received status $STATUS"
+              sleep 10
             fi
           done
-          echo "Service did not respond with HTTP 200 after 30 attempts." >&2
+          echo "Health check failed after 10 attempts"
           exit 1
